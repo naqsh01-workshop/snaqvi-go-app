@@ -1,0 +1,172 @@
+apiVersion: automation.cloudbees.io/v1alpha1
+kind: workflow
+name: Build and deploy
+on:
+  push:
+    branches:
+      - "**"
+permissions:
+  scm-token-own: read
+  scm-token-org: read
+jobs:
+  build-deploy-staging:
+    environment: staging
+    if: ${{ vars.CLUSTER_ENVIRONMENT == 'staging' }}
+    steps:
+      - name: Get source code
+        uses: cloudbees-io/checkout@v1
+      - id: build
+        name: Build and scan
+        uses: calculi-corp/cb-internal-shared-actions/build@v1
+        with:
+          run-unit-test: "true"
+          unit-test-percent: "50"
+          snyk-sast-scan-code: "true"
+          go-binary-build: "true"
+          kaniko-build: "true"
+          trivy-scan-container: "true"
+          bundled-sonar-scan: "true"
+          snyk-org-name: ${{ vars.SNYK_SAAS_ORG_NAME }}
+          snyk-saas-token: ${{ secrets.SNYK_SAAS_TOKEN }}
+          go-binary-name: reports-service
+          registry-url: ${{ vars.STAGING_DOCKER_REGISTRY }}
+          registry-username: ${{ secrets.STAGING_DOCKER_USERNAME }}
+          registry-password: ${{ secrets.STAGING_DOCKER_PASSWORD }}
+          registry-image-name: staging/reports-service
+          dockerfile-path: Dockerfile-new
+      - id: package
+        name: Package the helm chart
+        uses: calculi-corp/cb-internal-shared-actions/package@v1
+        with:
+          helm-lint: "true"
+          registry-url: ${{ vars.STAGING_DOCKER_REGISTRY }}
+          registry-image-name: staging/charts
+          helm-package-folder-path: ./charts/reports-service
+          values: |
+            base:
+              image:
+                tag: ${{ steps.build.outputs.tag-digest }}
+      - id: consulservicename
+        name: Generate consul service name for the application
+        uses: docker://alpine:3.18
+        run: >
+          if [ '${{ cloudbees.scm.branch }}' = main ]; then
+            printf %s reports-service-staging > $CLOUDBEES_OUTPUTS/name
+          else
+            name=$(printf %s-%s reports-service  ${{ cloudbees.scm.sha }})
+            printf %s "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/' > $CLOUDBEES_OUTPUTS/name
+          fi
+      - id: deploy
+        name: Deploy the helm chart
+        uses: calculi-corp/cb-internal-shared-actions/deploy@v1
+        with:
+          kubeconfig: ${{ secrets.STAGING_CONFIG }}
+          deploy-branch: main
+          consule-service-name: ${{ steps.consulservicename.outputs.name }}
+          cb-internal-db-service: "true"
+          cb-internal-nats: "true"
+          install-type: helm-install
+          chart-location: ${{ steps.package.outputs.chart }}
+          chart-version: ${{ steps.package.outputs.version }}
+          release-name: ${{ steps.package.outputs.name }}
+          registry-root: ${{ vars.STAGING_DOCKER_REGISTRY }}
+          registry-username: ${{ secrets.STAGING_DOCKER_USERNAME }}
+          registry-password: ${{ secrets.STAGING_DOCKER_PASSWORD }}
+          image-registry: ${{ vars.STAGING_IMAGE_REGISTRY }}
+          values: >+
+            base:
+              replicas: ${{ cloudbees.scm.branch == 'main' && '3' || '1' }}
+              service:
+                annotations:
+                  consul.hashicorp.com/service-name: ${{ steps.consulservicename.outputs.name }}
+              resources:
+                limits:
+                  cpu: ${{ cloudbees.scm.branch == 'main' && '1500m' || '500m' }}
+                  memory: ${{ cloudbees.scm.branch == 'main' && '2Gi' || '128Mi' }}
+                requests:
+                  cpu: ${{ cloudbees.scm.branch == 'main' && '250m' || '200m' }}
+                  memory: ${{ cloudbees.scm.branch == 'main' && '500Mi' || '64Mi' }}
+              secretEnv:
+                SERVICE_DB: ${{ cloudbees.scm.branch == 'main' && 'db-service-staging.query.consul:8083' || 'db-service:8083' }}
+                NATS_SERVER: ${{ cloudbees.scm.branch == 'main' && 'tls://nats.query.consul:4222' || 'tls://nats:4222' }}
+                OPENSEARCH_ENDPOINT: ${{ vars.OPENSEARCH_ENDPOINT_STAGING }}
+                OPENSEARCH_USER: ${{ secrets.OPENSEARCH_USERNAME_STAGING }}
+                OPENSEARCH_PWD: ${{ secrets.OPENSEARCH_PASSWORD_STAGING }}
+                SERVICE_REPOSITORY: ${{ cloudbees.scm.branch == 'main' && 'repository-service-staging.query.consul:8100' || 'repository-service:8100' }}
+                SERVICE_RBACSERVICE: ${{ cloudbees.scm.branch == 'main' && 'rbac-service-staging.query.consul:8101' || 'rbac-service:8101' }}
+                SERVICE_ENDPOINT: ${{ cloudbees.scm.branch == 'main' && 'endpoint-service-staging.query.consul:8102' || 'endpoint-service:8102' }}
+                  
+  build-preprod:
+    steps:
+      - uses: cloudbees-io/checkout@v1
+        name: Get source code
+      - uses: calculi-corp/cb-internal-shared-actions/build@v1
+        name: Build and scan
+        id: build
+        with:
+          run-unit-test: "true"
+          unit-test-percent: "50"
+          snyk-sast-scan-code: "true"
+          go-binary-build: "true"
+          kaniko-build: "true"
+          trivy-scan-container: "true"
+          bundled-sonar-scan: "true"
+          snyk-org-name: ${{ vars.SNYK_SAAS_ORG_NAME }}
+          snyk-saas-token: ${{ secrets.SNYK_SAAS_TOKEN }}
+          go-binary-name: reports-service
+          registry-url: ${{ vars.STAGING_DOCKER_REGISTRY }}
+          registry-username: ${{ secrets.STAGING_DOCKER_USERNAME }}
+          registry-password: ${{ secrets.STAGING_DOCKER_PASSWORD }}
+          registry-image-name: preprod/reports-service
+          dockerfile-path: Dockerfile-new
+      - uses: calculi-corp/cb-internal-shared-actions/package@v1
+        name: Package the helm chart
+        id: package
+        with:
+          helm-lint: "true"
+          registry-url: ${{ vars.STAGING_DOCKER_REGISTRY }}
+          registry-image-name: preprod/charts
+          helm-package-folder-path: ./charts/reports-service
+          values: |
+            base:
+              image:
+                tag: ${{ steps.build.outputs.tag-digest }}          
+      - uses: drew-jenkins-action1
+        name: demo-jenkins
+        kind: build
+  build-prod:
+    if: ${{ vars.CLUSTER_ENVIRONMENT == 'prod' }}
+    steps:
+      - name: Get source code
+        uses: cloudbees-io/checkout@v1
+      - id: build
+        name: Build and scan
+        uses: calculi-corp/cb-internal-shared-actions/build@v1
+        with:
+          run-unit-test: "true"
+          unit-test-percent: "50"
+          snyk-sast-scan-code: "true"
+          go-binary-build: "true"
+          kaniko-build: "true"
+          trivy-scan-container: "true"
+          bundled-sonar-scan: "true"
+          snyk-org-name: ${{ vars.SNYK_SAAS_ORG_NAME }}
+          snyk-saas-token: ${{ secrets.SNYK_SAAS_TOKEN }}
+          go-binary-name: reports-service
+          registry-url: ${{ vars.STAGING_DOCKER_REGISTRY }}
+          registry-username: ${{ secrets.STAGING_DOCKER_USERNAME }}
+          registry-password: ${{ secrets.STAGING_DOCKER_PASSWORD }}
+          registry-image-name: testing/reports-service
+          dockerfile-path: Dockerfile-new
+      - id: package
+        name: Package the helm chart
+        uses: calculi-corp/cb-internal-shared-actions/package@v1
+        with:
+          helm-lint: "true"
+          registry-url: ${{ vars.STAGING_DOCKER_REGISTRY }}
+          registry-image-name: testing/charts
+          helm-package-folder-path: ./charts/reports-service
+          values: |
+            base:
+              image:
+                tag: ${{ steps.build.outputs.tag-digest }}
