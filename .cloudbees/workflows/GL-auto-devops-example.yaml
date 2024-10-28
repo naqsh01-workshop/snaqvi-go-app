@@ -1,0 +1,137 @@
+apiVersion: automation.cloudbees.io/v1alpha1
+kind: workflow
+name: My workflow
+on:
+  push:
+    branches:
+      - "**"
+jobs:
+  build:
+    steps:
+      - uses: docker://golang:1.20.3-alpine3.17
+        name: Say hello
+        shell: sh
+        run: |
+          echo "hello world"
+      - uses: cloudbees-io/configure-eks-credentials@v1
+        name: EKS credentials
+        with:
+          role-to-assume: cluster-name
+          role-session-name: admin-test-authenticate
+          role-external-id: admin
+          name: configure
+  Test:
+    environment: Test-environment
+    steps:
+      - uses: newrelic-actions-test
+        name: "New relic "
+        kind: test
+        with:
+          duration: "5"
+          api-key: "46464"
+    needs:
+      - build
+  Deploy_staging_app:
+    environment: Test-environment
+    steps:
+      - uses: cloudbees-io/argocd-run-workflow@v2
+        name: Argo Deploy
+        kind: deploy
+        with:
+          url: "test.com "
+          token: "59556564"
+          namespace: Piland_Island
+          workflow-name: test argo deploy
+          parameters: "test "
+      - uses: cloudbees-io/newrelic-verify-deploy@v1
+        name: NewRelic Verify deploy
+        kind: deploy
+        with:
+          duration: "5"
+          api-key: "5"
+          policies: "5"
+          conditions: "5"
+    needs:
+      - Test
+      - Code_Quality
+      - SAST
+      - Secret_Detection
+  Code_Quality:
+    environment: Test-environment
+    steps:
+      - uses: mendsast-preconfig
+        name: QA
+        kind: test
+        with:
+          server-url: mend.com
+          token: d
+    needs:
+      - build
+  SAST:
+    steps:
+      - uses: cloudbees-io/checkmarx-sast-scan-code@v1
+        name: CheckMarx SAST Scan
+        with:
+          server-url: "2"
+          username: "2"
+          password: "2"
+          token: "2"
+    needs:
+      - build
+  Secret_Detection:
+    environment: Test-environment
+    steps:
+      - uses: cloudbees-io/trufflehog-secret-scan-container@v1
+        name: Trufflehog Secret Scan
+        kind: scan
+        with:
+          image-location: "1"
+          image-tag: "1"
+          threshold-very-high: "1"
+    needs:
+      - build
+  DAST:
+    steps:
+      - name: StackHawk DAST
+        uses: cloudbees-io/stackhawk-dast-scan-environment@v1
+        run: ""
+        with:
+          token: "1"
+          environment: "1"
+          url: "1"
+          paths: "1"
+          test-path: "1"
+          app-id: "1"
+          auth-type: "1"
+        shell: ""
+        kind: scan
+    environment: ""
+    needs: Deploy_staging_app
+  Zap_Scanner:
+    steps:
+      - uses: cloudbees-io/zap-dast-scan-environment@v1
+        name: "Zap DAST "
+        kind: scan
+        with:
+          token: "1"
+          zap-url: "1"
+          environment: "1"
+          url: "1"
+          paths: "1"
+          context-available: "1"
+          auth-type: "1"
+    needs:
+      - Deploy_staging_app
+  Prod_Deploy:
+    steps:
+      - uses: cloudbees-io/argocd-run-workflow@v2
+        name: ArgoCD_Deploy
+        kind: deploy
+        with:
+          url: "1"
+          token: "1"
+          namespace: "1"
+          workflow-name: "1"
+    needs:
+      - DAST
+      - Zap_Scanner
