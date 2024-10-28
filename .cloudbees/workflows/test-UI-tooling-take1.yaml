@@ -1,0 +1,112 @@
+apiVersion: automation.cloudbees.io/v1alpha1
+kind: workflow
+name: My workflow
+on:
+  push:
+    branches:
+      - "**"
+jobs:
+  build:
+    steps:
+      - uses: docker://golang:1.20.3-alpine3.17
+        name: Say hello
+        shell: sh
+        run: |
+          echo "hello world"
+      - uses: cloudbees-io/configure-eks-credentials@v1
+        name: EKS credentials
+        with:
+          role-to-assume: cluster-name
+          role-session-name: admin-test-authenticate
+          role-external-id: admin
+          name: configure
+  Test:
+    environment: Test-environment
+    steps:
+      - uses: newrelic-actions-test
+        name: "New relic "
+        kind: test
+        with:
+          duration: "5"
+          api-key: "46464"
+    needs:
+      - QA
+  Scan:
+    environment: Test-environment
+    steps:
+      - uses: cloudbees-io/checkmarx-sast-scan-code@v1
+        name: Checkmarx SAST
+        kind: scan
+        with:
+          server-url: checkmarx.com
+          username: dpiland
+          password: dpiland
+          token: secretsauce
+      - uses: cloudbees-io/trivy-scan-container@v1
+        name: Trivy container scan
+        kind: scan
+        with:
+          server-url: trivy.com
+          image-tag: "*"
+          image-location: "*"
+      - uses: cloudbees-io/stackhawk-dast-scan-environment@v1
+        name: StackHawk DAST
+        with:
+          token: "8"
+          environment: "8"
+          url: "8"
+          paths: "8"
+          test-path: "8"
+          app-id: "8"
+          auth-type: "8"
+          app-username-form-field-name: dpiland
+      - uses: cloudbees-io/jfrog-xray-scan-container@v1
+        name: JFrog XRay
+        kind: test
+        with:
+          username: dpiland
+          registry-url: test.com/JFrog
+          password: test
+          image-location: /image
+          image-tag: JFrog
+      - uses: cloudbees-io/sonarqube-sast-scan-code@v1
+        name: Sonarqube
+        with:
+          server-url: test.sonoaq.com
+          username: dpiland
+          password: password
+    needs:
+      - Test
+  Deploy:
+    environment: Test-environment
+    steps:
+      - uses: cloudbees-io/argocd-run-workflow@v2
+        name: Argo Deploy
+        kind: deploy
+        with:
+          url: "test.com "
+          token: "59556564"
+          namespace: Piland_Island
+          workflow-name: test argo deploy
+          parameters: "test "
+      - uses: cloudbees-io/newrelic-verify-deploy@v1
+        name: NewRelic Verify deploy
+        kind: deploy
+        with:
+          duration: "5"
+          api-key: "5"
+          policies: "5"
+          conditions: "5"
+    needs:
+      - Test
+  QA:
+    environment: Test-environment
+    steps:
+      - uses: mendsast-preconfig
+        name: QA
+        kind: test
+        with:
+          server-url: mend.com
+          token: d
+    needs:
+      - build
